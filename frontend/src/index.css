@@ -1,0 +1,128 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Slate-based enterprise palette */
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Indigo primary */
+    --primary: 234 89% 56%;
+    --primary-foreground: 210 40% 98%;
+    --primary-soft: 234 89% 96%;
+
+    --secondary: 215 28% 95%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 215 28% 95%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 234 89% 96%;
+    --accent-foreground: 234 89% 30%;
+
+    /* Emerald success */
+    --success: 158 84% 39%;
+    --success-foreground: 0 0% 100%;
+    --success-soft: 152 76% 94%;
+
+    --warning: 28 96% 54%;
+    --warning-foreground: 0 0% 100%;
+    --warning-soft: 32 100% 95%;
+
+    --info: 210 95% 56%;
+    --info-soft: 210 100% 96%;
+
+    --violet: 262 83% 62%;
+    --violet-soft: 262 100% 96%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 234 89% 56%;
+
+    --radius: 0.75rem;
+
+    /* Surfaces */
+    --surface: 215 28% 97%;
+    --surface-strong: 215 25% 92%;
+
+    /* Chart palette */
+    --chart-primary: 234 89% 56%;
+    --chart-competitor: 215 16% 55%;
+    --chart-grid: 215 25% 90%;
+
+    /* Gradients & shadows */
+    --gradient-primary: linear-gradient(135deg, hsl(234 89% 56%), hsl(245 80% 65%));
+    --gradient-success: linear-gradient(135deg, hsl(158 84% 39%), hsl(162 84% 45%));
+    --shadow-card: 0 1px 2px 0 hsl(222 47% 11% / 0.04), 0 1px 3px 0 hsl(222 47% 11% / 0.06);
+    --shadow-elevated: 0 4px 12px -2px hsl(222 47% 11% / 0.08), 0 2px 6px -1px hsl(222 47% 11% / 0.04);
+    --shadow-glow: 0 0 24px hsl(158 84% 45% / 0.5);
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5% 26%;
+    --sidebar-primary: 240 6% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 5% 96%;
+    --sidebar-accent-foreground: 240 6% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217 91% 60%;
+  }
+
+  .dark {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 234 89% 65%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+    --success: 158 84% 45%;
+    --success-foreground: 222 47% 6%;
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 234 89% 65%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+@layer utilities {
+  .glow-success {
+    box-shadow: var(--shadow-glow);
+  }
+  .shadow-card { box-shadow: var(--shadow-card); }
+  .shadow-elevated { box-shadow: var(--shadow-elevated); }
+  .bg-gradient-primary { background: var(--gradient-primary); }
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+.animate-pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }

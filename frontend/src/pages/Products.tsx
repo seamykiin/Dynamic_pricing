@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { TopNav } from "@/components/dashboard/TopNav";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { PricingTable } from "@/components/dashboard/PricingTable";
-import { fetchDashboard, createProduct, type DashboardPayload } from "@/lib/api";
+import { fetchDashboard, createProduct, inspectCompetitorUrl, trackProductFromUrl, type DashboardPayload } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Download, Plus } from "lucide-react";
+import { Download, Plus, Globe, Loader2, Sparkles } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,21 +14,58 @@ const Products = () => {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
-  const [formData, setFormData] = useState({ id: "", name: "", category: "", stock: 0, currentPrice: 0, competitorPrice: 0, margin: 0 });
+  const [urlInput, setUrlInput] = useState("");
+  const [inspectingUrl, setInspectingUrl] = useState(false);
+  const [formData, setFormData] = useState({ id: "", name: "", category: "", stock: 100, currentPrice: 0, competitorPrice: 0, margin: 35.0 });
+
+  const handleAutofillFromUrl = async () => {
+    if (!urlInput.trim()) return;
+    setInspectingUrl(true);
+    try {
+      const res = await inspectCompetitorUrl(urlInput.trim());
+      const compPrice = res.price > 0 ? res.price : 99.0;
+      setFormData({
+        id: res.sku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
+        name: res.title,
+        category: res.category || "General",
+        stock: 100,
+        competitorPrice: compPrice,
+        currentPrice: compPrice,
+        margin: 35.0
+      });
+      toast.success("Autofilled from Competitor Website!", {
+        description: `Found: ${res.title} at ₹${res.price} (${res.vendor})`
+      });
+    } catch (err: any) {
+      toast.error(err.message || "Failed to inspect competitor URL");
+    } finally {
+      setInspectingUrl(false);
+    }
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await createProduct(formData);
-      toast.success("Product created!");
+      if (urlInput.trim()) {
+        await trackProductFromUrl({
+          url: urlInput.trim(),
+          costPrice: formData.currentPrice * (1.0 - formData.margin / 100.0),
+          stock: formData.stock,
+          customSku: formData.id
+        });
+        toast.success("Competitor Product Tracked & Added!");
+      } else {
+        await createProduct(formData);
+        toast.success("Product created!");
+      }
       setOpen(false);
-      // Re-fetch to update table
+      setUrlInput("");
       setLoading(true);
       const updatedData = await fetchDashboard();
       setData(updatedData);
       setLoading(false);
-    } catch (err) {
-      toast.error("Failed to create product");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create product");
     }
   };
 
@@ -95,11 +132,54 @@ const Products = () => {
                       New Product
                     </Button>
                   </DialogTrigger>
-                  <DialogContent>
+                  <DialogContent className="sm:max-w-[500px]">
                     <DialogHeader>
-                      <DialogTitle>Add New Product</DialogTitle>
+                      <DialogTitle className="flex items-center gap-2">
+                        <Sparkles className="h-4 w-4 text-primary" />
+                        Add or Track Product
+                      </DialogTitle>
                     </DialogHeader>
-                    <form onSubmit={handleCreate} className="space-y-4 pt-4">
+
+                    {/* Competitor URL Autofill Section */}
+                    <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2 mt-2">
+                      <Label className="text-xs font-semibold text-primary flex items-center gap-1.5">
+                        <Globe className="h-3.5 w-3.5" />
+                        Autofill from Any Website URL
+                      </Label>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Paste any product URL (Shopify, Amazon, WooCommerce, etc.)..."
+                          value={urlInput}
+                          onChange={(e) => setUrlInput(e.target.value)}
+                          className="h-8 text-xs bg-surface font-mono"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={handleAutofillFromUrl}
+                          disabled={inspectingUrl || !urlInput.trim()}
+                          className="h-8 text-xs gap-1 shrink-0 border-primary/30 text-primary"
+                        >
+                          {inspectingUrl ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                          {inspectingUrl ? "Extracting..." : "Autofill"}
+                        </Button>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        Universal Extractor parses real-time prices, vendor, stock status, and images automatically.
+                      </p>
+                    </div>
+
+                    <div className="relative my-1">
+                      <div className="absolute inset-0 flex items-center">
+                        <span className="w-full border-t border-border" />
+                      </div>
+                      <div className="relative flex justify-center text-[10px] uppercase">
+                        <span className="bg-card px-2 text-muted-foreground font-semibold">Product Details</span>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleCreate} className="space-y-4 pt-1">
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <Label>Product ID</Label>

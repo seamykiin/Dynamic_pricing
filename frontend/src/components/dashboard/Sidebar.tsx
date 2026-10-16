@@ -1,15 +1,17 @@
 import { 
   LayoutDashboard, Package2, BarChart3, ShoppingBag, 
-  Sliders, ShieldAlert, Settings, Brain 
+  Sliders, ShieldAlert, Settings, Brain, Sparkles, Globe, Gauge
 } from "lucide-react";
 import { useLocation, Link } from "react-router-dom";
 
 const items = [
-  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
+  { icon: LayoutDashboard, label: "Dashboard Cockpit", path: "/dashboard" },
+  { icon: Sparkles, label: "AI Pricing Hub", path: "/ai-pricing", badge: "AI" },
   { icon: ShoppingBag, label: "Amazon Storefront", path: "/store", badge: "Live" },
-  { icon: Sliders, label: "What-If Simulator", path: "/what-if", badge: "AI" },
+  { icon: Sliders, label: "What-If Simulator", path: "/what-if" },
   { icon: Package2, label: "Products Catalog", path: "/products" },
   { icon: BarChart3, label: "Telemetry & Logs", path: "/reports" },
+  { icon: Globe, label: "Tensor Margin Showcase", path: "/landing" },
 ];
 
 export function Sidebar() {
@@ -18,7 +20,7 @@ export function Sidebar() {
   return (
     <aside className="sticky top-0 hidden h-screen w-[72px] flex-col items-center justify-between border-r border-border bg-card py-5 lg:flex">
       <div className="flex flex-col items-center gap-1.5">
-        <Link to="/" className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-primary shadow-elevated">
+        <Link to="/" title="Tensor Margin Home" className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-primary shadow-elevated hover:scale-105 transition-all">
           <Brain className="h-5 w-5 text-primary-foreground" strokeWidth={2.5} />
         </Link>
         {items.map((it) => {
@@ -49,7 +51,7 @@ export function Sidebar() {
         })}
       </div>
       <div className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground [writing-mode:vertical-rl]">
-        PB · v2.0
+        TM · v2.0
       </div>
     </aside>
   );

@@ -1,4 +1,12 @@
-// API client for Dynamic Pricing Engine & Amazon-Style Storefront
+export interface Competitor {
+  id: string;
+  name: string;
+  price: number;
+  inStock: boolean;
+  rating: number;
+  shippingDays: number;
+  lastUpdated?: string;
+}
 
 export interface Product {
   id: string;
@@ -7,10 +15,18 @@ export interface Product {
   stock: number;
   costPrice?: number;
   currentPrice: number;
+  previousPrice?: number;
   competitorPrice: number;
+  minCompetitorPrice?: number;
+  avgCompetitorPrice?: number;
   aiSuggestedPrice: number;
   margin: number; // %
   trend: "up" | "down" | "flat";
+  strategy?: string;
+  competitors?: Competitor[];
+  competitorStockoutsCount?: number;
+  guardrailStatus?: string;
+  guardrailReason?: string;
   rating?: number;
   reviewsCount?: number;
   badge?: string | null;
@@ -23,6 +39,8 @@ export interface KPIs {
   apiLatencyMs: number;
   enginePricedToday: number;
   recentOrdersCount?: number;
+  pendingAiCount?: number;
+  competitorStockouts?: number;
 }
 
 export interface PricePoint {
@@ -93,6 +111,10 @@ export interface TelemetryLog {
   status: string;
   reason: string;
   timestamp: string;
+  previousPrice?: number;
+  appliedPrice?: number;
+  isRollback?: boolean;
+  canRollback?: boolean;
 }
 
 export interface RecentOrder {
@@ -137,9 +159,34 @@ export interface WhatIfPayload {
 const API_BASE_URL =
   (import.meta as any).env?.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
-export async function fetchDashboard(): Promise<DashboardPayload> {
-  const res = await fetch(`${API_BASE_URL}/api/dashboard`);
+export interface ProductElasticityTrajectory {
+  productId: string;
+  productName: string;
+  category: string;
+  currentPrice: number;
+  competitorPrice: number;
+  aiSuggestedPrice: number;
+  costPrice: number;
+  margin: number;
+  stock: number;
+  strategy: string;
+  elasticityScore: number;
+  elasticityLabel: string;
+  trajectory: PricePoint[];
+}
+
+export async function fetchDashboard(productId?: string): Promise<DashboardPayload> {
+  const url = productId
+    ? `${API_BASE_URL}/api/dashboard?productId=${encodeURIComponent(productId)}`
+    : `${API_BASE_URL}/api/dashboard`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error("Failed to fetch dashboard");
+  return res.json();
+}
+
+export async function fetchProductElasticityTrajectory(productId: string): Promise<ProductElasticityTrajectory> {
+  const res = await fetch(`${API_BASE_URL}/api/products/${encodeURIComponent(productId)}/elasticity-trajectory`);
+  if (!res.ok) throw new Error("Failed to fetch product elasticity trajectory");
   return res.json();
 }
 
@@ -179,6 +226,17 @@ export async function createProduct(product: Partial<Product>) {
     body: JSON.stringify(product)
   });
   if (!res.ok) throw new Error("Failed to create product");
+  return res.json();
+}
+
+export async function deleteProduct(productId: string): Promise<{ ok: boolean; productId: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/products/${encodeURIComponent(productId)}`, {
+    method: "DELETE"
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to delete product");
+  }
   return res.json();
 }
 
@@ -260,4 +318,170 @@ export async function triggerRetraining() {
   return res.json();
 }
 
+export async function updateProductStrategy(productId: string, strategy: string) {
+  const res = await fetch(`${API_BASE_URL}/api/products/${productId}/strategy`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ strategy })
+  });
+  if (!res.ok) throw new Error("Failed to update product strategy");
+  return res.json();
+}
+
+export async function rollbackPrice(productId: string, logId?: number) {
+  const res = await fetch(`${API_BASE_URL}/api/prices/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ productId, logId })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to rollback price" }));
+    throw new Error(err.detail || "Failed to rollback price");
+  }
+  return res.json();
+}
+
+export async function triggerCompetitorScrape() {
+  const res = await fetch(`${API_BASE_URL}/api/competitors/scrape`, {
+    method: "POST"
+  });
+  if (!res.ok) throw new Error("Failed to scrape competitor market");
+  return res.json();
+}
+
+export interface CopilotResponse {
+  ok: boolean;
+  query: string;
+  answer: string;
+  confidence: number;
+  source?: string;
+  actionRecommended?: string;
+}
+
+export interface MlElasticityDiagnostics {
+  productId: string;
+  productName: string;
+  currentPrice: number;
+  costPrice: number;
+  competitorPrice: number;
+  elasticityScore: number;
+  elasticityLabel: string;
+  optimalPrice: number;
+  expectedDemand: number;
+  expectedProfit: number;
+  framework: string;
+  featureImportances: Record<string, number>;
+  hasCompetitorStockout: boolean;
+  curve: WhatIfCurvePoint[];
+}
+
+export interface LiveScrapeResponse {
+  ok: boolean;
+  productId: string;
+  competitors: Competitor[];
+  newCompetitorPrice: number;
+  newAiSuggestedPrice: number;
+  status: string;
+  reason: string;
+}
+
+export async function askAiCopilot(query: string, productId?: string): Promise<CopilotResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/ai/copilot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, productId })
+  });
+  if (!res.ok) throw new Error("Failed to consult AI Copilot");
+  return res.json();
+}
+
+export async function fetchMlElasticity(productId: string): Promise<MlElasticityDiagnostics> {
+  const res = await fetch(`${API_BASE_URL}/api/ai/elasticity/${productId}`);
+  if (!res.ok) throw new Error("Failed to fetch ML elasticity diagnostics");
+  return res.json();
+}
+
+export async function scrapeLiveCompetitors(params: {
+  productId?: string;
+  shopifyUrl?: string;
+  serpapiKey?: string;
+}): Promise<LiveScrapeResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/competitors/scrape-live`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params)
+  });
+  if (!res.ok) throw new Error("Failed to execute live competitor scrape");
+  return res.json();
+}
+
+export async function triggerMlRetraining(): Promise<{ ok: boolean; framework: string; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/ml/retrain`, {
+    method: "POST"
+  });
+  if (!res.ok) throw new Error("Failed to trigger ML retraining");
+  return res.json();
+}
+
+export interface InspectUrlResponse {
+  ok: boolean;
+  title: string;
+  vendor: string;
+  price: number;
+  currency: string;
+  inStock: boolean;
+  sku: string;
+  imageUrl: string;
+  category: string;
+  sourceUrl: string;
+  sourceType: string;
+}
+
+export interface TrackFromUrlParams {
+  url: string;
+  costPrice?: number;
+  stock?: number;
+  strategy?: string;
+  customSku?: string;
+  targetMargin?: number;
+}
+
+export async function inspectCompetitorUrl(url: string): Promise<InspectUrlResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/competitors/inspect-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to inspect URL" }));
+    throw new Error(err.detail || "Failed to inspect URL");
+  }
+  return res.json();
+}
+
+export async function trackProductFromUrl(params: TrackFromUrlParams): Promise<{ ok: boolean; product: any }> {
+  const res = await fetch(`${API_BASE_URL}/api/products/track-from-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to track product from URL" }));
+    throw new Error(err.detail || "Failed to track product from URL");
+  }
+  return res.json();
+}
+
+export async function refreshTrackedCompetitorUrls(): Promise<{ ok: boolean; refreshedCount: number; updates: any[]; message: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/competitors/refresh-tracked-urls`, {
+    method: "POST"
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to refresh tracked competitor URLs" }));
+    throw new Error(err.detail || "Failed to refresh tracked competitor URLs");
+  }
+  return res.json();
+}
+
 export { API_BASE_URL };
+

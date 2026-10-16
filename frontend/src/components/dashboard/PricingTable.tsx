@@ -1,14 +1,15 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { 
   ArrowUp, ArrowDown, Minus, Sparkles, Filter, Download, 
-  Check, Edit3, Search, CheckCheck 
+  Check, Edit3, Search, CheckCheck, Undo2, Trash2 
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { 
-  applyAiPrice, applyAllAiPrices, updateManualPrice, 
+  applyAiPrice, applyAllAiPrices, updateManualPrice, rollbackPrice, deleteProduct,
   type Product 
 } from "@/lib/api";
 import { toast } from "sonner";
@@ -29,8 +30,17 @@ interface Props {
 const fmt = (n: number) =>
   n.toLocaleString("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 });
 
+const STRAT_BADGES: Record<string, { label: string; icon: string }> = {
+  profit_maximizer: { label: "Profit Maximizer", icon: "🎯" },
+  aggressive_undercut: { label: "Buy Box Undercut", icon: "⚡" },
+  clearance_markdown: { label: "Clearance", icon: "📦" },
+  brand_premium: { label: "Brand Premium", icon: "👑" },
+  margin_preservation: { label: "Margin 35%", icon: "🛡️" }
+};
+
 export function PricingTable({ products, loading, onProductsUpdate }: Props) {
   const [applying, setApplying] = useState<string | null>(null);
+  const [rollingBack, setRollingBack] = useState<string | null>(null);
   const [applyingAll, setApplyingAll] = useState(false);
   const [appliedIds, setAppliedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
@@ -39,6 +49,10 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
   // Manual price edit dialog
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [manualPriceInput, setManualPriceInput] = useState<string>("");
+
+  // Delete product dialog
+  const [deleteConfirmProduct, setDeleteConfirmProduct] = useState<Product | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const categories = ["All", ...Array.from(new Set(products.map((p) => p.category)))];
 
@@ -63,6 +77,7 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
             item.id === p.id
               ? {
                   ...item,
+                  previousPrice: p.currentPrice,
                   currentPrice: p.aiSuggestedPrice,
                   margin: item.costPrice 
                     ? roundNum(((p.aiSuggestedPrice - item.costPrice) / p.aiSuggestedPrice) * 100)
@@ -83,6 +98,34 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
     }
   }
 
+  async function handleRollback(p: Product) {
+    setRollingBack(p.id);
+    try {
+      const res = await rollbackPrice(p.id);
+      if (onProductsUpdate) {
+        onProductsUpdate(
+          products.map((item) =>
+            item.id === p.id
+              ? {
+                  ...item,
+                  currentPrice: res.revertedPrice,
+                  previousPrice: res.previousPrice,
+                  margin: res.newMargin
+                }
+              : item
+          )
+        );
+      }
+      toast.success(`Price Rolled Back for ${p.id}`, {
+        description: res.message || `Restored prior price: ${fmt(res.revertedPrice)}`
+      });
+    } catch (err: any) {
+      toast.error(err.message || "Failed to rollback price");
+    } finally {
+      setRollingBack(null);
+    }
+  }
+
   async function handleApplyAll() {
     setApplyingAll(true);
     try {
@@ -94,6 +137,7 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
         onProductsUpdate(
           products.map((p) => ({
             ...p,
+            previousPrice: p.currentPrice,
             currentPrice: p.aiSuggestedPrice,
           }))
         );
@@ -106,6 +150,22 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
       toast.error(err.message || "Failed to bulk apply prices");
     } finally {
       setApplyingAll(false);
+    }
+  }
+
+  async function handleDelete(p: Product) {
+    setDeletingId(p.id);
+    try {
+      await deleteProduct(p.id);
+      toast.success(`Product ${p.id} deleted successfully`);
+      if (onProductsUpdate) {
+        onProductsUpdate(products.filter((item) => item.id !== p.id));
+      }
+      setDeleteConfirmProduct(null);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete product listing");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -165,7 +225,7 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
               Live Inventory & Pricing Engine
             </h2>
             <Badge variant="outline" className="text-[10px] text-primary border-primary/30">
-              PPO RL Active
+              Predictive AI Active
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">
@@ -210,6 +270,14 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
             {applyingAll ? "Applying All…" : "Apply All Recommendations"}
           </Button>
 
+          {/* AI Pricing Hub Link */}
+          <Link to="/ai-pricing">
+            <Button size="sm" variant="outline" className="h-8 gap-1.5 text-xs border-primary/30 text-primary hover:bg-primary/10">
+              <Sparkles className="h-3.5 w-3.5" />
+              AI Pricing Hub
+            </Button>
+          </Link>
+
           {/* Export */}
           <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={handleExport}>
             <Download className="h-3.5 w-3.5" />
@@ -223,7 +291,7 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-surface/60 text-xs uppercase tracking-wider text-muted-foreground">
-              <th className="px-5 py-3 text-left font-medium">Product SKU</th>
+              <th className="px-5 py-3 text-left font-medium">Product SKU & Strategy</th>
               <th className="px-4 py-3 text-right font-medium">Stock</th>
               <th className="px-4 py-3 text-right font-medium">Current Price</th>
               <th className="px-4 py-3 text-right font-medium">Competitor</th>
@@ -260,6 +328,12 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
                 const deltaPct = p.currentPrice > 0 ? (delta / p.currentPrice) * 100 : 0;
                 const positive = delta >= 0;
                 const applied = appliedIds.has(p.id) || p.currentPrice === p.aiSuggestedPrice;
+                const canRollback =
+                  p.previousPrice !== undefined &&
+                  p.previousPrice !== null &&
+                  p.previousPrice !== p.currentPrice;
+                const strat = p.strategy || "profit_maximizer";
+                const stratBadge = STRAT_BADGES[strat] || STRAT_BADGES.profit_maximizer;
 
                 return (
                   <tr
@@ -277,13 +351,19 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
                             </Badge>
                           )}
                         </div>
-                        <div className="mt-0.5 flex items-center gap-2">
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
                           <span className="font-mono text-[11px] text-muted-foreground">{p.id}</span>
                           <Badge
                             variant="secondary"
                             className="h-4 rounded px-1.5 text-[10px] font-medium"
                           >
                             {p.category}
+                          </Badge>
+                          <Badge
+                            variant="outline"
+                            className="h-4 rounded px-1.5 text-[9px] font-semibold border-primary/20 bg-primary/5 text-primary"
+                          >
+                            {stratBadge.icon} {stratBadge.label}
                           </Badge>
                         </div>
                       </div>
@@ -351,19 +431,42 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
 
                     {/* Action Button */}
                     <td className="px-5 py-4 text-right">
-                      <Button
-                        size="sm"
-                        variant={applied ? "secondary" : "default"}
-                        disabled={applying === p.id || applied}
-                        onClick={() => handleApply(p)}
-                        className="h-8 text-xs font-semibold"
-                      >
-                        {applied
-                          ? "Applied ✓"
-                          : applying === p.id
-                          ? "Applying…"
-                          : "Apply AI Price"}
-                      </Button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        {canRollback && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={rollingBack === p.id}
+                            onClick={() => handleRollback(p)}
+                            className="h-8 px-2 text-xs border-border text-muted-foreground hover:text-foreground"
+                            title={`Rollback price to prior ${fmt(p.previousPrice ?? 0)}`}
+                          >
+                            <Undo2 className={`h-3 w-3 ${rollingBack === p.id ? "animate-spin" : ""}`} />
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setDeleteConfirmProduct(p)}
+                          className="h-8 px-2 text-xs border-destructive/20 text-destructive hover:bg-destructive/10"
+                          title={`Delete product listing ${p.id}`}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={applied ? "secondary" : "default"}
+                          disabled={applying === p.id || applied}
+                          onClick={() => handleApply(p)}
+                          className="h-8 text-xs font-semibold"
+                        >
+                          {applied
+                            ? "Applied ✓"
+                            : applying === p.id
+                            ? "Applying…"
+                            : "Apply AI Price"}
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -405,6 +508,51 @@ export function PricingTable({ products, loading, onProductsUpdate }: Props) {
             </Button>
             <Button size="sm" onClick={handleManualSubmit}>
               Save Price
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Delete Product Confirmation Dialog */}
+      <Dialog open={!!deleteConfirmProduct} onOpenChange={(open) => !open && setDeleteConfirmProduct(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <Trash2 className="h-5 w-5" /> Delete Product Listing
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2 text-xs">
+            <p className="text-muted-foreground">
+              Are you sure you want to permanently delete <strong className="text-foreground">{deleteConfirmProduct?.name}</strong> ({deleteConfirmProduct?.id})?
+            </p>
+            <div className="rounded-lg bg-surface border border-border p-3 space-y-1">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">SKU:</span>
+                <span className="font-mono font-medium text-foreground">{deleteConfirmProduct?.id}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Category:</span>
+                <span className="text-foreground">{deleteConfirmProduct?.category}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Current Price:</span>
+                <span className="font-medium text-foreground">{fmt(deleteConfirmProduct?.currentPrice ?? 0)}</span>
+              </div>
+            </div>
+            <p className="text-destructive font-medium">
+              ⚠️ This will remove the listing and all historical pricing logs from the system.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setDeleteConfirmProduct(null)} disabled={Boolean(deletingId)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => deleteConfirmProduct && handleDelete(deleteConfirmProduct)}
+              disabled={Boolean(deletingId)}
+            >
+              {deletingId ? "Deleting…" : "Permanently Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>

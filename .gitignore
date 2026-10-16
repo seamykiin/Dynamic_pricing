@@ -9,6 +9,12 @@ frontend/.next/
 frontend/.env*
 frontend/build/
 
+# Environment variables and secrets
+.env
+*.env
+.env.*
+.env.local
+
 # OS / editor artefacts
 .DS_Store
 *.log

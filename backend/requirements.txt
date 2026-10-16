@@ -59,3 +59,7 @@ uvloop==0.22.1
 watchfiles==1.1.1
 websockets==16.0
 Werkzeug==3.1.8
+requests>=2.31.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+lightgbm>=4.3.0

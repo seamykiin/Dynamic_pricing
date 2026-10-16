@@ -172,12 +172,15 @@ export default function Store() {
         <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-4 py-2.5">
           {/* Logo & Delivery */}
           <div className="flex items-center gap-6">
-            <Link to="/store" className="flex items-center gap-1.5 transition-opacity hover:opacity-90">
-              <span className="text-xl font-bold tracking-tight text-white">
-                amazon<span className="text-[#febd69]">b2b</span>
-              </span>
-              <span className="rounded bg-[#febd69] px-1.5 py-0.5 text-[10px] font-black text-slate-900">
-                VOLUME PRICING
+            <Link to="/store" className="flex items-center gap-3 transition-opacity hover:opacity-90 group">
+              <div className="flex flex-col">
+                <span className="text-xl font-black tracking-tight text-white leading-tight">
+                  Tensor<span className="text-[#febd69]">Margin</span>
+                </span>
+                <span className="text-[9px] font-bold text-gray-400 -mt-0.5 tracking-wider uppercase">B2B Store</span>
+              </div>
+              <span className="rounded bg-[#febd69] px-2 py-0.5 text-[10px] font-black text-slate-900 ml-1">
+                DYNAMIC PRICING
               </span>
             </Link>
 
@@ -212,7 +215,7 @@ export default function Store() {
           {/* Dashboard Link & Cart */}
           <div className="flex items-center gap-4">
             <Link
-              to="/"
+              to="/dashboard"
               className="rounded-md border border-gray-600 bg-[#232f3e] px-3 py-1.5 text-xs font-semibold text-gray-200 transition hover:bg-[#37475a] hover:text-white"
             >
               ← Ops Dashboard
@@ -259,11 +262,7 @@ export default function Store() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-bold text-slate-900">B2B Volume Tier Engine Active</h2>
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                </span>
+                <h2 className="text-sm font-bold text-slate-900">B2B Volume Tier Pricing</h2>
                 <span className="rounded bg-emerald-100 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-800">
                   Bulk Margin Protection Guaranteed
                 </span>

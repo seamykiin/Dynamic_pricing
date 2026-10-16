@@ -105,7 +105,7 @@ const Index = () => {
             <KpiCards kpis={data?.kpis ?? null} loading={loading} />
 
             {/* Elasticity Chart */}
-            <ElasticityChart data={data?.elasticity ?? []} loading={loading} />
+            <ElasticityChart data={data?.elasticity ?? []} loading={loading} products={data?.products ?? []} />
 
             {/* Pricing Table */}
             <PricingTable 

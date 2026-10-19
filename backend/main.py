@@ -560,7 +560,9 @@ class WhatIfRequest(BaseModel):
     demandSurgeMultiplier: float = 1.0
 
 class CopilotRequest(BaseModel):
-    query: str
+    query: Optional[str] = None
+    prompt: Optional[str] = None
+    message: Optional[str] = None
     productId: Optional[str] = None
 
 class LiveScrapeRequest(BaseModel):
@@ -1458,19 +1460,29 @@ def copilot_chat(request: CopilotRequest):
     """
     db = SessionLocal()
     try:
+        user_query = (request.query or request.message or request.prompt or "").strip()
         products = db.query(Product).all()
         catalog_summary = []
         for p in products:
+            comps = []
+            try:
+                comps = json.loads(p.competitors_data or "[]")
+            except Exception:
+                pass
+            stockouts_count = sum(1 for c in comps if not c.get("inStock", True))
             catalog_summary.append({
                 "id": p.id,
                 "name": p.name,
+                "category": p.category,
+                "costPrice": p.cost_price,
                 "currentPrice": p.current_price,
                 "competitorPrice": p.competitor_price,
                 "aiSuggestedPrice": p.ai_suggested_price,
                 "stock": p.stock,
                 "margin": p.margin,
                 "strategy": p.strategy,
-                "competitorStockoutsCount": sum(1 for c in json.loads(p.competitors_data or "[]") if not c.get("inStock", True))
+                "hasCompetitorStockout": stockouts_count > 0,
+                "competitorStockoutsCount": stockouts_count
             })
 
         focused = None
@@ -1478,17 +1490,21 @@ def copilot_chat(request: CopilotRequest):
             focused = next((p for p in catalog_summary if p["id"] == request.productId), None)
 
         result = PricingAICopilot.answer_query(
-            query=request.query,
+            query=user_query,
             catalog_summary=catalog_summary,
             focused_product=focused
         )
         return {
             "ok": True,
-            "query": request.query,
+            "query": user_query,
             **result
         }
     finally:
         db.close()
+
+@app.post("/api/chat")
+def legacy_chat_endpoint(request: CopilotRequest):
+    return copilot_chat(request)
 
 # --- Predictive ML Elasticity Diagnostics Endpoint ---
 

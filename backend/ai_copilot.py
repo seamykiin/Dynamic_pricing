@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import urllib.request
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -10,54 +11,63 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv()
 
+_gemini_disabled_until = 0.0
+
 def query_external_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
     """Attempts to query Google Gemini using the configured API key with multi-model cascade."""
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip("\"' \n\r")
-    if not gemini_key:
+    global _gemini_disabled_until
+    now = time.time()
+    if now < _gemini_disabled_until:
         return None
 
-    # Model priority list (handles potential quota/503 spikes across endpoints)
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip("\"' \n\r")
+    if not gemini_key or gemini_key.startswith("your_"):
+        return None
+
     candidate_models = [
-        "gemini-3.5-flash-lite",
-        "gemini-3.5-flash",
+        "gemini-2.5-flash",
         "gemini-flash-latest",
-        "gemini-3.8-flash",
-        "gemini-3.7-flash"
+        "gemini-pro-latest"
     ]
 
     for model in candidate_models:
-        for api_version in ["v1beta", "v1"]:
-            try:
-                url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model}:generateContent?key={gemini_key}"
-                payload = {
-                    "contents": [
-                        {
-                            "role": "user",
-                            "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]
-                        }
-                    ],
-                    "generationConfig": {
-                        "temperature": 0.35,
-                        "maxOutputTokens": 650
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
+            payload = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]
                     }
+                ],
+                "generationConfig": {
+                    "temperature": 0.35,
+                    "maxOutputTokens": 650
                 }
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"}
-                )
-                with urllib.request.urlopen(req, timeout=12) as res:
-                    if res.status == 200:
-                        resp_json = json.loads(res.read().decode("utf-8"))
-                        candidates = resp_json.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                text = parts[0].get("text", "").strip()
-                                if text:
-                                    return text
-            except Exception:
-                continue
+            }
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=3.5) as res:
+                if res.status == 200:
+                    resp_json = json.loads(res.read().decode("utf-8"))
+                    candidates = resp_json.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "").strip()
+                            if text:
+                                return text
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                # Key is denied access or disabled; back off for 10 minutes to avoid UI lag
+                _gemini_disabled_until = time.time() + 600
+                return None
+            continue
+        except Exception:
+            continue
 
     return None
 
@@ -141,12 +151,18 @@ class PricingAICopilot:
         Interactive Copilot Chat:
         Answers commercial pricing questions using real-time catalog and elasticity context.
         """
+        q = (query or "").lower().strip()
+
         catalog_lines = []
         for p in catalog_summary[:12]:
+            cost = float(p.get("costPrice") or 0)
+            curr = float(p.get("currentPrice") or 0)
+            comp = float(p.get("competitorPrice") or 0)
+            sugg = float(p.get("aiSuggestedPrice") or 0)
             catalog_lines.append(
                 f"- SKU: {p.get('id')}, Name: '{p.get('name')}', Category: {p.get('category', 'Industrial')}, "
-                f"Stock: {p.get('stock')} units, Cost: ₹{p.get('costPrice', 0):.2f}, Current Price: ₹{p.get('currentPrice', 0):.2f}, "
-                f"Competitor Price: ₹{p.get('competitorPrice', 0):.2f}, AI Recommendation: ₹{p.get('aiSuggestedPrice', 0):.2f}, "
+                f"Stock: {p.get('stock', 0)} units, Cost: ₹{cost:.2f}, Current Price: ₹{curr:.2f}, "
+                f"Competitor Price: ₹{comp:.2f}, AI Recommendation: ₹{sugg:.2f}, "
                 f"Gross Margin: {p.get('margin', 0)}%, Strategy: {p.get('strategy', 'profit_maximizer')}"
             )
         catalog_text = "\n".join(catalog_lines)
@@ -167,92 +183,157 @@ class PricingAICopilot:
             f"USER INQUIRY:\n{query}"
         )
 
-        # Try calling real LLM if key is configured
-        llm_answer = query_external_llm(
-            system_prompt=system_context,
-            user_prompt=user_prompt
-        )
-        if llm_answer:
+        # 1. Try calling real LLM if key is configured and functional
+        try:
+            llm_answer = query_external_llm(
+                system_prompt=system_context,
+                user_prompt=user_prompt
+            )
+            if llm_answer:
+                return {
+                    "answer": llm_answer,
+                    "confidence": 0.98,
+                    "source": "Tensor Margin Bot"
+                }
+        except Exception:
+            pass
+
+        # 2. High-Precision Deterministic Commercial Reasoning Engine
+        # Handles greetings
+        if q in ["hi", "hello", "hey", "help", "start"]:
+            prod_count = len(catalog_summary)
             return {
-                "answer": llm_answer,
-                "confidence": 0.98,
+                "answer": (
+                    f"**Tensor Margin Bot Ready**\n"
+                    f"Currently monitoring **{prod_count} active SKUs** across dynamic market feeds.\n\n"
+                    f"• **Instant Diagnostics**: Ask about competitor stockouts, margin health, or price elasticity.\n"
+                    f"• **Optimization**: Type 'recommendations' to review pending price adjustments.\n"
+                    f"• **Specific SKU**: Mention any SKU (e.g. 'VLV-X200') for immediate pricing advice."
+                ),
+                "confidence": 0.99,
+                "actionRecommended": "Review Active Recommendations",
                 "source": "Tensor Margin Bot"
             }
 
-        # Deterministic Commercial Reasoning Engine
-        if "stockout" in q or "competitor" in q:
+        # Focused Product query (by SKU or Name in query)
+        matched_p = None
+        for p in catalog_summary:
+            pid = str(p.get("id") or "").lower()
+            pname = str(p.get("name") or "").lower()
+            if pid in q or (len(pname) > 3 and pname in q):
+                matched_p = p
+                break
+
+        if matched_p or focused_product:
+            target = matched_p or focused_product
+            curr = float(target.get("currentPrice") or 0)
+            comp = float(target.get("competitorPrice") or 0)
+            sugg = float(target.get("aiSuggestedPrice") or 0)
+            margin = target.get("margin", 0)
+            stock = target.get("stock", 0)
+            strat = target.get("strategy", "profit_maximizer").replace("_", " ").title()
+            delta = sugg - curr
+
+            direction = "increase" if delta > 0 else ("decrease" if delta < 0 else "hold")
+            delta_str = f"+₹{delta:.2f}" if delta > 0 else (f"-₹{abs(delta):.2f}" if delta < 0 else "No change")
+
+            return {
+                "answer": (
+                    f"**Product Analysis: {target.get('name')} ({target.get('id')})**\n\n"
+                    f"• **Current vs Suggested**: ₹{curr:.2f} → **₹{sugg:.2f}** ({delta_str})\n"
+                    f"• **Competitor Benchmark**: ₹{comp:.2f} (Lowest tracked market anchor)\n"
+                    f"• **Gross Margin & Inventory**: {margin}% gross margin with {stock} units in stock\n"
+                    f"• **Active Policy**: {strat} with hard 15% minimum margin guardrail\n\n"
+                    f"**Recommendation**: Execute suggested price adjustment to maximize net gross profit while maintaining target conversion velocity."
+                ),
+                "confidence": 0.96,
+                "actionRecommended": f"{direction.title()} price to ₹{sugg:.2f}",
+                "source": "Tensor Margin Bot"
+            }
+
+        # Competitor Stockouts
+        if "stockout" in q or "competitor" in q or "out of stock" in q:
             stockout_products = [p for p in catalog_summary if p.get("competitorStockoutsCount", 0) > 0 or p.get("hasCompetitorStockout")]
             if stockout_products:
-                names = ", ".join(p["name"] for p in stockout_products[:2])
+                names = ", ".join(f"**{p.get('name')}** (₹{float(p.get('aiSuggestedPrice') or 0):.2f})" for p in stockout_products[:3])
                 return {
                     "answer": (
-                        f"Detected competitor stockouts on {len(stockout_products)} items, including {names}. "
-                        "Our AI engine has automatically applied a +4.5% margin capture lift since competing supply is constrained. "
-                        "Recommended action: Maintain price premiums until competitor inventory restocks."
+                        f"**Competitor Stockout Intelligence**\n\n"
+                        f"Detected supply shortages across {len(stockout_products)} competing listings:\n"
+                        f"• {names}\n\n"
+                        f"**Action Engine**: Applied automated +4.5% margin capture lift to take advantage of constrained external availability while protecting conversion."
                     ),
-                    "confidence": 0.94,
+                    "confidence": 0.95,
                     "actionRecommended": "Hold Premium Pricing",
                     "source": "Tensor Margin Bot"
                 }
             else:
                 return {
                     "answer": (
-                        "All monitored competitors are currently in stock across your active catalog. "
-                        "Market pricing is stable. Our AI engine is maintaining standard profit-maximizing equilibrium."
+                        f"**Competitor Feed Assessment**\n\n"
+                        f"• Monitored competitors are currently **in stock** across all tracked SKUs.\n"
+                        f"• Market pricing remains stable within historical variance bands.\n"
+                        f"• Engine is executing standard profit-maximization policy without scarcity markups."
                     ),
-                    "confidence": 0.90,
+                    "confidence": 0.92,
                     "actionRecommended": "Monitor Competitor Feeds",
                     "source": "Tensor Margin Bot"
                 }
 
-        if "margin" in q or "profit" in q:
-            low_margin = sorted(catalog_summary, key=lambda p: p.get("margin", 50))[:2]
-            high_margin = sorted(catalog_summary, key=lambda p: p.get("margin", 0), reverse=True)[:2]
+        # Margins & Profit
+        if "margin" in q or "profit" in q or "cogs" in q or "cost" in q:
+            sorted_by_margin = sorted(catalog_summary, key=lambda p: float(p.get("margin") or 0))
+            low_p = sorted_by_margin[0] if sorted_by_margin else {}
+            high_p = sorted_by_margin[-1] if sorted_by_margin else {}
             return {
                 "answer": (
-                    f"Catalog Margin Diagnostics: Average gross margin is across healthy thresholds. "
-                    f"Highest margin item is '{high_margin[0].get('name', 'Product')}' at {high_margin[0].get('margin', 0)}% margin. "
-                    f"Lowest margin item is '{low_margin[0].get('name', 'Product')}' at {low_margin[0].get('margin', 0)}%. "
-                    "All pricing suggestions strictly respect our 15% Minimum Gross Margin Guardrail."
+                    f"**Catalog Margin Diagnostics**\n\n"
+                    f"• **Highest Margin**: {high_p.get('name')} at **{high_p.get('margin', 0)}%**\n"
+                    f"• **Lowest Margin**: {low_p.get('name')} at **{low_p.get('margin', 0)}%**\n"
+                    f"• **Guardrail Enforcement**: 100% of recommendations comply with the hard 15% Minimum Gross Margin Floor."
                 ),
-                "confidence": 0.92,
+                "confidence": 0.94,
                 "actionRecommended": "Audit Low-Margin SKUs",
                 "source": "Tensor Margin Bot"
             }
 
-        if "elasticity" in q or "sensitivity" in q or "demand" in q:
+        # Elasticity & Demand
+        if "elasticity" in q or "sensitivity" in q or "demand" in q or "curve" in q:
             return {
                 "answer": (
-                    "Demand Elasticity Analysis: Our predictive XGBoost/GBDT demand forecaster continuously calculates "
-                    "point elasticity (ε = %ΔDemand / %ΔPrice). When |ε| < 0.85 (inelastic), we capture price premiums without volume loss. "
-                    "When |ε| > 1.25 (elastic), our engine prevents steep increases to avoid conversion churn."
+                    f"**Predictive Demand Elasticity**\n\n"
+                    f"• **Microeconomic Model**: Point elasticity calculated via ε = (%ΔDemand / %ΔPrice)\n"
+                    f"• **Inelastic Threshold (|ε| < 0.85)**: Price can be raised safely to harvest margin without unit churn.\n"
+                    f"• **Elastic Threshold (|ε| > 1.25)**: Recommended discounts stimulate conversion volume and total revenue yield."
                 ),
-                "confidence": 0.95,
-                "actionRecommended": "View Elasticity Sensitivity Curve",
+                "confidence": 0.96,
+                "actionRecommended": "View Demand Curve Tab",
                 "source": "Tensor Margin Bot"
             }
 
-        if "discount" in q or "undercut" in q or "buy box" in q:
+        # Discount, Undercut, Buy Box
+        if "discount" in q or "undercut" in q or "buy box" in q or "strategy" in q:
             return {
                 "answer": (
-                    "Buy Box Strategy: For fast-moving items, setting strategy to 'Buy Box Undercut' will price 1.5% below "
-                    "the lowest in-stock competitor. If inventory is below 20 units, the system automatically matches rather than discounts "
-                    "to preserve margin while inventory is limited."
+                    f"**Competitive Positioning Strategy**\n\n"
+                    f"• **Buy Box Undercut**: Prices 1.5% below lowest active competitor to capture algorithmic search priority.\n"
+                    f"• **Scarcity Protection**: When inventory drops below 20 units, engine suppresses discounts to preserve inventory gross margin."
                 ),
-                "confidence": 0.91,
-                "actionRecommended": "Review Strategy Settings",
+                "confidence": 0.93,
+                "actionRecommended": "Review Strategy Allocations",
                 "source": "Tensor Margin Bot"
             }
 
-        # General response
+        # Overall summary / recommendations
         prod_count = len(catalog_summary)
         return {
             "answer": (
-                f"Tensor Margin Bot Analysis: Monitoring {prod_count} active SKUs across real-time SerpApi Google Shopping benchmarks "
-                f"and Open Shopify competitor feeds. All items are evaluated with Machine Learning demand curves and gross margin guardrails. "
-                "How would you like to optimize pricing today? You can ask about margin preservation, elasticity curves, or competitor stockout advantages."
+                f"**Tensor Margin Bot Commercial Overview**\n\n"
+                f"• **Active Catalog**: {prod_count} SKUs dynamically monitored with live competitor price feeds.\n"
+                f"• **Automated Policies**: ML profit optimization, competitive undercut, and margin protection active.\n"
+                f"• **Inquiry Guide**: Inquire about specific SKUs, competitor stockouts, or profit margins for detailed breakdown."
             ),
-            "confidence": 0.89,
+            "confidence": 0.91,
             "actionRecommended": "Inspect Catalog Recommendations",
             "source": "Tensor Margin Bot"
         }

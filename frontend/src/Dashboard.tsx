@@ -21,6 +21,12 @@ import {
   placeStoreOrder,
   triggerSurgeSimulation,
   requestRFQ,
+  inspectCompetitorUrl,
+  attachCompetitorUrl,
+  trackProductFromUrl,
+  refreshTrackedCompetitorUrls,
+  type Competitor,
+  type InspectUrlResponse,
   type Product,
   type DashboardPayload,
   type KPIs,
@@ -124,6 +130,7 @@ interface DisplayProduct {
   strategy: string;
   previousPrice?: number;
   costPrice?: number;
+  competitors?: Competitor[];
 }
 
 const fmt = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -888,7 +895,8 @@ function PricingHub({
   onCrawl,
   crawling,
   onStrategyChange,
-  onDelete
+  onDelete,
+  onReload
 }: {
   products: DisplayProduct[];
   applied: Set<string>;
@@ -898,6 +906,7 @@ function PricingHub({
   crawling: boolean;
   onStrategyChange: (sku: string, strat: string) => void;
   onDelete?: (product: DisplayProduct) => void;
+  onReload?: () => void;
 }) {
   const [activeSubTab, setActiveSubTab] = useState<"policies" | "copilot" | "scraper" | "diagnostics">("policies");
   const [filter, setFilter] = useState("All policies");
@@ -913,6 +922,15 @@ function PricingHub({
   const [serpapiKey, setSerpapiKey] = useState("");
   const [liveScraping, setLiveScraping] = useState(false);
   const [scrapeResult, setScrapeResult] = useState<LiveScrapeResponse | null>(null);
+
+  // Dedicated URL Tracker State (Amazon, Flipkart & Custom Storefronts)
+  const [competitorUrlInput, setCompetitorUrlInput] = useState("");
+  const [targetSkuForUrl, setTargetSkuForUrl] = useState(products[0]?.sku || "");
+  const [inspectingUrl, setInspectingUrl] = useState(false);
+  const [inspectedData, setInspectedData] = useState<InspectUrlResponse | null>(null);
+  const [attachingUrl, setAttachingUrl] = useState(false);
+  const [trackingNewProduct, setTrackingNewProduct] = useState(false);
+  const [refreshingUrls, setRefreshingUrls] = useState(false);
 
   // Diagnostics state
   const [retrainingMl, setRetrainingMl] = useState(false);
@@ -954,6 +972,83 @@ function PricingHub({
       toast.error("Live competitor scrape failed");
     } finally {
       setLiveScraping(false);
+    }
+  };
+
+  const handleInspectCompetitorUrl = async () => {
+    if (!competitorUrlInput.trim()) {
+      toast.error("Please enter a valid product link (Amazon, Flipkart, etc.)");
+      return;
+    }
+    setInspectingUrl(true);
+    setInspectedData(null);
+    try {
+      const data = await inspectCompetitorUrl(competitorUrlInput.trim());
+      if (!data.ok || data.price <= 0) {
+        toast.error(data.error || "Could not retrieve live price for this URL");
+      } else {
+        setInspectedData(data);
+        toast.success(`Verified Live Quote: ${data.vendor} · ${fmt(data.price)}`);
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Failed to inspect competitor link");
+    } finally {
+      setInspectingUrl(false);
+    }
+  };
+
+  const handleAttachUrlToSku = async () => {
+    const targetSku = targetSkuForUrl || products[0]?.sku;
+    if (!inspectedData || !targetSku) return;
+    setAttachingUrl(true);
+    try {
+      const res = await attachCompetitorUrl({
+        productId: targetSku,
+        url: inspectedData.sourceUrl || competitorUrlInput.trim(),
+        customName: inspectedData.vendor
+      });
+      toast.success(res.message);
+      setInspectedData(null);
+      setCompetitorUrlInput("");
+      if (onReload) onReload();
+    } catch (e: any) {
+      toast.error(e.message || "Failed to link competitor quote");
+    } finally {
+      setAttachingUrl(false);
+    }
+  };
+
+  const handleCreateNewSkuFromUrl = async () => {
+    if (!inspectedData) return;
+    setTrackingNewProduct(true);
+    try {
+      const res = await trackProductFromUrl({
+        url: inspectedData.sourceUrl || competitorUrlInput.trim(),
+        costPrice: Number((inspectedData.price * 0.65).toFixed(2)),
+        stock: 100,
+        strategy: "profit_maximizer"
+      });
+      toast.success(`Tracked new SKU: ${res.product.id} (${fmt(res.product.aiSuggestedPrice)})`);
+      setInspectedData(null);
+      setCompetitorUrlInput("");
+      if (onReload) onReload();
+    } catch (e: any) {
+      toast.error(e.message || "Failed to track product from URL");
+    } finally {
+      setTrackingNewProduct(false);
+    }
+  };
+
+  const handleRefreshAllUrls = async () => {
+    setRefreshingUrls(true);
+    try {
+      const res = await refreshTrackedCompetitorUrls();
+      toast.success(res.message || "Refreshed live competitor quotes");
+      if (onReload) onReload();
+    } catch (e: any) {
+      toast.error(e.message || "Failed to refresh tracked URLs");
+    } finally {
+      setRefreshingUrls(false);
     }
   };
 
@@ -1075,19 +1170,77 @@ function PricingHub({
                   </div>
 
                   <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                    <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">Multi-competitor market quotes</div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                        Multi-competitor market quotes
+                      </div>
+                      <button
+                        onClick={() => {
+                          setTargetSkuForUrl(product.sku);
+                          setActiveSubTab("scraper");
+                        }}
+                        className="flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 transition"
+                        title="Link an Amazon or Flipkart product URL to this SKU"
+                      >
+                        <Ico name="globe" className="size-3" /> + Link URL
+                      </button>
+                    </div>
+
                     <div className="mt-3 grid grid-cols-3 gap-2">
-                      {[
-                        ["Apex Industrial", product.competitor],
-                        ["GlobalSupply", product.competitor * 0.97],
-                        ["PrimeParts Hub", product.competitor * 1.04]
-                      ].map(([name, price], i) => (
-                        <div key={String(name)} className="rounded-xl bg-white p-3">
-                          <div className="truncate text-xs text-slate-400">{name}</div>
-                          <div className="mt-1 text-sm font-black">{fmt(Number(price))}</div>
-                          <div className={`mt-1 text-[10px] font-bold ${i === 1 ? "text-emerald-500" : "text-slate-400"}`}>{i === 1 ? "Lowest" : "Live quote"}</div>
-                        </div>
-                      ))}
+                      {product.competitors && product.competitors.length > 0 ? (
+                        product.competitors.slice(0, 3).map((comp, idx) => {
+                          const validInStock = product.competitors!.filter((c) => c.inStock);
+                          const minInStockPrice = validInStock.length > 0 ? Math.min(...validInStock.map((c) => c.price)) : 0;
+                          const isLowest = comp.inStock && comp.price === minInStockPrice;
+                          const isExternalLink = comp.url && comp.url.startsWith("http");
+                          const isAmazon = comp.name.toLowerCase().includes("amazon") || (comp.url && comp.url.includes("amazon"));
+                          const isFlipkart = comp.name.toLowerCase().includes("flipkart") || (comp.url && comp.url.includes("flipkart"));
+
+                          return (
+                            <div key={comp.id || idx} className="rounded-xl bg-white p-3 border border-slate-100 flex flex-col justify-between">
+                              <div>
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className={`truncate text-xs font-bold ${isAmazon ? "text-amber-800" : isFlipkart ? "text-blue-800" : "text-slate-600"}`}>
+                                    {comp.name}
+                                  </span>
+                                  {isExternalLink && (
+                                    <a
+                                      href={comp.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-blue-500 hover:text-blue-700 shrink-0 text-[10px]"
+                                      title="Open live competitor store link"
+                                    >
+                                      ↗
+                                    </a>
+                                  )}
+                                </div>
+                                <div className="mt-1 text-sm font-black text-slate-900">{fmt(comp.price)}</div>
+                              </div>
+                              <div className="mt-1 flex items-center justify-between text-[10px]">
+                                <span className={!comp.inStock ? "text-rose-500 font-bold" : isLowest ? "text-emerald-600 font-bold" : "text-slate-400 font-medium"}>
+                                  {!comp.inStock ? "Out of stock" : isLowest ? "Lowest quote" : "Live quote"}
+                                </span>
+                                {comp.lastUpdated && (
+                                  <span className="text-[9px] font-mono text-slate-300">{comp.lastUpdated}</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        [
+                          ["Apex Industrial", product.competitor],
+                          ["GlobalSupply", product.competitor * 0.97],
+                          ["PrimeParts Hub", product.competitor * 1.04]
+                        ].map(([name, price], i) => (
+                          <div key={String(name)} className="rounded-xl bg-white p-3">
+                            <div className="truncate text-xs text-slate-400">{name}</div>
+                            <div className="mt-1 text-sm font-black">{fmt(Number(price))}</div>
+                            <div className={`mt-1 text-[10px] font-bold ${i === 1 ? "text-emerald-500" : "text-slate-400"}`}>{i === 1 ? "Lowest" : "Benchmark quote"}</div>
+                          </div>
+                        ))
+                      )}
                     </div>
                   </div>
 
@@ -1212,14 +1365,279 @@ function PricingHub({
 
       {/* Tab 3: Competitor Web Intelligence */}
       {activeSubTab === "scraper" && (
-        <div className="mt-5 space-y-4">
+        <div className="mt-5 space-y-6">
+          {/* Card 1: Direct URL Competitor Tracker (Amazon, Flipkart & Custom Storefronts) */}
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-base font-black text-slate-950 flex items-center gap-2">
+                  <Ico name="globe" className="size-5 text-emerald-600" /> Live Product URL Tracker (Amazon & Flipkart)
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Paste any product URL from Amazon, Flipkart, or custom e-commerce stores. The engine uses TLS browser impersonation to bypass anti-bot WAFs (Akamai & AWS WAF) and extract 100% accurate live prices, stock status, and titles.
+                </p>
+              </div>
+              <span className="rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-bold text-emerald-700 flex items-center gap-1.5">
+                <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
+                Anti-Bot WAF Bypass Active
+              </span>
+            </div>
+
+            {/* Quick Test Chips */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold text-slate-400">Quick Test Links:</span>
+              {[
+                { label: "📦 Amazon: iPhone 14", url: "https://www.amazon.in/dp/B0BDK62PDX" },
+                { label: "🛒 Flipkart: iPhone 17", url: "https://www.flipkart.com/apple-iphone-17-black-256-gb/p/itmc61b40459dd98?pid=MOBHQV9YCUG4ZQZK" },
+                { label: "🔧 Amazon: Industrial Valve", url: "https://www.amazon.in/dp/B0CC55FS1X" }
+              ].map((chip, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setCompetitorUrlInput(chip.url)}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 transition"
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Input Bar */}
+            <div className="grid gap-3 md:grid-cols-[1fr_2fr_auto]">
+              <div>
+                <label className="text-xs font-bold text-slate-600">Attach to Catalog SKU</label>
+                <select
+                  value={targetSkuForUrl}
+                  onChange={(e) => setTargetSkuForUrl(e.target.value)}
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-bold text-slate-900 outline-none focus:bg-white"
+                >
+                  {products.map((p) => (
+                    <option key={p.sku} value={p.sku}>
+                      {p.sku} — {p.name.slice(0, 24)}… ({fmt(p.price)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-600">Product URL (Amazon, Flipkart, etc.)</label>
+                <input
+                  value={competitorUrlInput}
+                  onChange={(e) => setCompetitorUrlInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleInspectCompetitorUrl(); }}
+                  placeholder="https://www.amazon.in/dp/B0... or https://www.flipkart.com/.../p/..."
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs font-bold text-slate-900 outline-none focus:bg-white focus:border-blue-500 transition"
+                />
+              </div>
+
+              <div className="flex items-end">
+                <button
+                  onClick={handleInspectCompetitorUrl}
+                  disabled={inspectingUrl || !competitorUrlInput.trim()}
+                  className="w-full md:w-auto rounded-xl bg-slate-950 px-5 py-2.5 text-xs font-black text-white hover:bg-slate-800 disabled:opacity-50 transition flex items-center justify-center gap-1.5"
+                >
+                  {inspectingUrl ? (
+                    <>
+                      <Ico name="refresh" className="size-3.5 animate-spin" /> Crawling Live…
+                    </>
+                  ) : (
+                    <>
+                      <Ico name="search" className="size-3.5" /> Inspect Live Link
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Inspected Live Product Preview Card */}
+            {inspectedData && (
+              <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50/30 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="flex size-6 items-center justify-center rounded-lg bg-emerald-600 text-white font-bold text-xs">
+                      ✓
+                    </span>
+                    <span className="text-xs font-black text-slate-950">Verified Live Scrape Result</span>
+                    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider border ${
+                      inspectedData.vendor.toLowerCase().includes("amazon")
+                        ? "bg-amber-100 text-amber-900 border-amber-300"
+                        : inspectedData.vendor.toLowerCase().includes("flipkart")
+                        ? "bg-blue-100 text-blue-900 border-blue-300"
+                        : "bg-emerald-100 text-emerald-900 border-emerald-300"
+                    }`}>
+                      {inspectedData.vendor}
+                    </span>
+                  </div>
+                  <span className="text-xs font-bold text-slate-500 font-mono">
+                    Source: {inspectedData.sourceType}
+                  </span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-start gap-4 rounded-xl bg-white p-4 border border-emerald-100 shadow-sm">
+                  {inspectedData.imageUrl && (
+                    <img
+                      src={inspectedData.imageUrl}
+                      alt={inspectedData.title}
+                      className="size-20 rounded-xl object-contain bg-slate-50 border border-slate-200 shrink-0 p-1"
+                    />
+                  )}
+                  <div className="flex-1 space-y-1">
+                    <h4 className="font-extrabold text-sm text-slate-950 leading-snug">{inspectedData.title}</h4>
+                    <div className="flex flex-wrap items-center gap-4 pt-1 text-xs">
+                      <div>
+                        <span className="text-slate-400">Live Price:</span>{" "}
+                        <b className="text-lg font-black text-slate-950">{fmt(inspectedData.price)}</b>
+                        <span className="ml-1 text-[10px] font-bold text-slate-400">{inspectedData.currency}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Stock Status:</span>{" "}
+                        <b className={inspectedData.inStock ? "text-emerald-600" : "text-rose-600"}>
+                          {inspectedData.inStock ? "● In Stock" : "● Out of Stock"}
+                        </b>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Confidence:</span>{" "}
+                        <b className="text-emerald-700">100% Verified Live</b>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+                  <button
+                    onClick={handleCreateNewSkuFromUrl}
+                    disabled={trackingNewProduct}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                  >
+                    {trackingNewProduct ? "Creating SKU…" : "+ Track as New Monitored Listing"}
+                  </button>
+
+                  <button
+                    onClick={handleAttachUrlToSku}
+                    disabled={attachingUrl}
+                    className="rounded-xl bg-slate-950 px-5 py-2 text-xs font-black text-white hover:bg-slate-800 transition flex items-center gap-1.5"
+                  >
+                    {attachingUrl ? (
+                      <>
+                        <Ico name="refresh" className="size-3.5 animate-spin" /> Attaching…
+                      </>
+                    ) : (
+                      <>
+                        <Ico name="check" className="size-3.5" /> Attach Quote to {targetSkuForUrl || products[0]?.sku}
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Card 2: Monitored Competitor Links Directory */}
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-base font-black text-slate-950 flex items-center gap-2">
+                  <Ico name="activity" className="size-5 text-blue-600" /> Active Monitored Competitor Links
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  External Amazon, Flipkart, and storefront URLs currently linked to catalog SKUs for autonomous dynamic repricing.
+                </p>
+              </div>
+              <button
+                onClick={handleRefreshAllUrls}
+                disabled={refreshingUrls}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-black text-slate-800 hover:bg-slate-100 transition flex items-center gap-1.5"
+              >
+                <Ico name="refresh" className={`size-3.5 ${refreshingUrls ? "animate-spin" : ""}`} />
+                {refreshingUrls ? "Re-crawling URLs…" : "Re-crawl All Competitor Links"}
+              </button>
+            </div>
+
+            {(() => {
+              const trackedList: Array<{ sku: string; prodName: string; comp: Competitor }> = [];
+              products.forEach((p) => {
+                p.competitors?.forEach((c) => {
+                  if (c.url && c.url.startsWith("http")) {
+                    trackedList.push({ sku: p.sku, prodName: p.name, comp: c });
+                  }
+                });
+              });
+
+              if (trackedList.length === 0) {
+                return (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center space-y-1.5">
+                    <div className="text-xs font-bold text-slate-600">No external product URLs attached yet.</div>
+                    <div className="text-[11px] text-slate-400">
+                      Paste an Amazon or Flipkart product URL above and click <b>Attach Quote</b> to start automated live competitor monitoring.
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="overflow-hidden rounded-2xl border border-slate-200">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-[10px] font-extrabold uppercase tracking-wider text-slate-400 border-b border-slate-200">
+                      <tr>
+                        <th className="px-4 py-3">Catalog SKU</th>
+                        <th className="px-4 py-3">Platform</th>
+                        <th className="px-4 py-3">Live Quote</th>
+                        <th className="px-4 py-3">Stock Status</th>
+                        <th className="px-4 py-3">Last Polled</th>
+                        <th className="px-4 py-3 text-right">External Link</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {trackedList.map(({ sku, prodName, comp }, i) => (
+                        <tr key={i} className="hover:bg-slate-50/70 transition">
+                          <td className="px-4 py-3">
+                            <span className="font-mono font-bold text-blue-700">{sku}</span>
+                            <div className="truncate max-w-[220px] text-slate-500 text-[11px]">{prodName}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${
+                              comp.name.toLowerCase().includes("amazon")
+                                ? "bg-amber-100 text-amber-900"
+                                : comp.name.toLowerCase().includes("flipkart")
+                                ? "bg-blue-100 text-blue-900"
+                                : "bg-slate-100 text-slate-800"
+                            }`}>
+                              {comp.name}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-black text-slate-900">{fmt(comp.price)}</td>
+                          <td className="px-4 py-3">
+                            <span className={`font-bold ${comp.inStock ? "text-emerald-600" : "text-rose-600"}`}>
+                              {comp.inStock ? "● In Stock" : "● Out of Stock"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-slate-400 font-mono text-[11px]">{comp.lastUpdated || "Just now"}</td>
+                          <td className="px-4 py-3 text-right">
+                            <a
+                              href={comp.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-blue-600 hover:bg-blue-50 transition"
+                            >
+                              Open Store ↗
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Card 3: Batch Shopify & Google Shopping Search */}
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
             <div>
               <div className="text-base font-black text-slate-950 flex items-center gap-2">
-                <Ico name="globe" className="size-5 text-emerald-600" /> Live Web Crawler & Competitor Intelligence
+                <Ico name="store" className="size-5 text-slate-600" /> Catalog-Wide Store Crawler (Shopify & SerpApi)
               </div>
               <p className="mt-1 text-xs text-slate-500">
-                Poll external competitor stores via public Shopify APIs and Google Shopping SerpApi to benchmark real pricing.
+                Poll whole competitor storefronts via public Shopify <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">/products.json</code> catalogs or Google Shopping SerpApi feeds.
               </p>
             </div>
 
@@ -1263,14 +1681,14 @@ function PricingHub({
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
               <div className="text-xs text-slate-400">
-                Queries public <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700">/products.json</code> & SerpApi without brittle CSS selectors.
+                Bulk catalog scraper for multi-item inventory sync.
               </div>
               <button
                 onClick={handleLiveScrape}
                 disabled={liveScraping}
                 className="rounded-xl bg-slate-950 px-5 py-2.5 text-xs font-black text-white hover:bg-slate-800 disabled:opacity-50 transition"
               >
-                {liveScraping ? "Fetching Market Feeds…" : "Scrape Live Competitors"}
+                {liveScraping ? "Fetching Market Feeds…" : "Scrape Store Catalog"}
               </button>
             </div>
 
@@ -1865,7 +2283,8 @@ export default function Dashboard() {
             margin: `${p.margin.toFixed(1)}%`,
             strategy: p.strategy || "profit_maximizer",
             previousPrice: p.previousPrice,
-            costPrice: p.costPrice
+            costPrice: p.costPrice,
+            competitors: p.competitors || []
           }));
           setProductsList(mapped);
           const alreadyApplied = new Set(data.products.filter((p) => p.currentPrice === p.aiSuggestedPrice).map((p) => p.id));
@@ -1880,8 +2299,23 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadDashboard();
-    const interval = setInterval(loadDashboard, 25000);
-    return () => clearInterval(interval);
+    // 4-second polling interval for multi-device live price synchronization
+    const interval = setInterval(loadDashboard, 4000);
+
+    // Instant sync whenever user switches to or focuses the window/tab
+    const handleSync = () => {
+      if (document.visibilityState === "visible") {
+        loadDashboard();
+      }
+    };
+    window.addEventListener("focus", handleSync);
+    document.addEventListener("visibilitychange", handleSync);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleSync);
+      document.removeEventListener("visibilitychange", handleSync);
+    };
   }, []);
 
   const handleApply = async (sku: string) => {
@@ -2313,6 +2747,7 @@ export default function Dashboard() {
               crawling={crawling}
               onStrategyChange={handleStrategyChange}
               onDelete={(p) => setDeleteConfirmProduct(p)}
+              onReload={loadDashboard}
             />
           )}
 

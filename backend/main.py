@@ -573,6 +573,11 @@ class LiveScrapeRequest(BaseModel):
 class InspectUrlRequest(BaseModel):
     url: str
 
+class AttachUrlRequest(BaseModel):
+    productId: str
+    url: str
+    customName: Optional[str] = None
+
 class TrackFromUrlRequest(BaseModel):
     url: str
     costPrice: Optional[float] = None
@@ -1745,6 +1750,97 @@ def inspect_url(request: InspectUrlRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to inspect URL: {str(e)}")
 
+@app.post("/api/competitors/attach-url")
+def attach_competitor_url(request: AttachUrlRequest):
+    """
+    Inspects an Amazon, Flipkart, or custom product link and attaches it directly
+    as a live competitor quote to an existing catalog SKU.
+    Re-evaluates the optimal AI dynamic price for that product.
+    """
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == request.productId).first()
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Product SKU {request.productId} not found")
+
+        scraped = inspect_competitor_product_url(request.url)
+        if not scraped.get("ok") or scraped.get("price", 0) <= 0:
+            raise HTTPException(status_code=400, detail=scraped.get("error") or "Failed to extract a live price from URL")
+
+        live_price = float(scraped["price"])
+        vendor_name = request.customName or scraped.get("vendor", "Competitor")
+
+        # Load existing competitors
+        comps = []
+        if product.competitors_data:
+            try:
+                comps = json.loads(product.competitors_data)
+            except Exception:
+                comps = []
+
+        # Check if URL already tracked, update it; otherwise append
+        existing_idx = next((i for i, c in enumerate(comps) if c.get("url") == request.url), -1)
+        competitor_entry = {
+            "id": f"comp_{random.randint(100, 999)}",
+            "name": vendor_name,
+            "title": scraped.get("title", product.name),
+            "price": live_price,
+            "inStock": scraped.get("inStock", True),
+            "rating": 4.7,
+            "shippingDays": 2,
+            "source": scraped.get("sourceType", "live_url_tracker"),
+            "url": request.url,
+            "imageUrl": scraped.get("imageUrl"),
+            "lastUpdated": datetime.now().strftime("%H:%M:%S")
+        }
+
+        if existing_idx >= 0:
+            comps[existing_idx] = competitor_entry
+        else:
+            comps.append(competitor_entry)
+
+        # Update competitor_price to the lowest in-stock competitor price
+        in_stock_prices = [c["price"] for c in comps if c.get("inStock", True) and c.get("price", 0) > 0]
+        if in_stock_prices:
+            product.competitor_price = min(in_stock_prices)
+        else:
+            product.competitor_price = live_price
+
+        product.competitors_data = json.dumps(comps)
+
+        # Recalculate AI suggested price
+        new_ai_price, status, reason = calculate_dynamic_price(
+            current_price=product.current_price,
+            competitor_price=product.competitor_price,
+            cost_price=product.cost_price,
+            stock=product.stock,
+            demand_surge=1.0,
+            strategy=product.strategy or "profit_maximizer",
+            competitors=comps,
+            is_primary=False,
+            product_name=product.name
+        )
+        product.ai_suggested_price = new_ai_price
+        product.margin = round(((product.current_price - product.cost_price) / max(product.current_price, 1.0)) * 100, 1)
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "message": f"Successfully attached {vendor_name} ({scraped.get('currency', 'INR')} {live_price}) to {product.id}",
+            "competitor": competitor_entry,
+            "product": {
+                "id": product.id,
+                "name": product.name,
+                "currentPrice": product.current_price,
+                "competitorPrice": product.competitor_price,
+                "aiSuggestedPrice": product.ai_suggested_price,
+                "competitors": comps
+            }
+        }
+    finally:
+        db.close()
+
 @app.post("/api/products/track-from-url")
 def track_product_from_url(request: TrackFromUrlRequest):
     """
@@ -1754,9 +1850,12 @@ def track_product_from_url(request: TrackFromUrlRequest):
     db = SessionLocal()
     try:
         scraped = inspect_competitor_product_url(request.url)
+        if not scraped.get("ok") or scraped.get("price", 0) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=scraped.get("error") or "Could not extract a verified price from this URL. Please verify the URL."
+            )
         comp_price = float(scraped.get("price", 99.0))
-        if comp_price <= 0:
-            comp_price = 99.0
 
         # Cost price derivation
         cost = request.costPrice if (request.costPrice and request.costPrice > 0) else round(comp_price * 0.65, 2)

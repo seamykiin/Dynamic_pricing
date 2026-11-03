@@ -5,6 +5,9 @@ export interface Competitor {
   inStock: boolean;
   rating: number;
   shippingDays: number;
+  url?: string;
+  source?: string;
+  imageUrl?: string;
   lastUpdated?: string;
 }
 
@@ -468,6 +471,19 @@ export async function trackProductFromUrl(params: TrackFromUrlParams): Promise<{
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Failed to track product from URL" }));
     throw new Error(err.detail || "Failed to track product from URL");
+  }
+  return res.json();
+}
+
+export async function attachCompetitorUrl(params: { productId: string; url: string; customName?: string }): Promise<{ ok: boolean; message: string; competitor: Competitor; product: any }> {
+  const res = await fetch(`${API_BASE_URL}/api/competitors/attach-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Failed to attach competitor URL" }));
+    throw new Error(err.detail || "Failed to attach competitor URL");
   }
   return res.json();
 }
